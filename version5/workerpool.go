@@ -19,7 +19,11 @@ func main() {
 	const taskNum = 100
 	go func() {
 		for i := 0; i < taskNum; i++ {
-			err := pool.SubmitWithTimeout(i, 2*time.Second)
+			idx := i
+			err := pool.SubmitWithTimeout(func() {
+				fmt.Println("任务处理中...", idx)
+				time.Sleep(100 * time.Millisecond)
+			}, 2*time.Second)
 			if err != nil {
 				fmt.Println("任务提交失败:", i, err)
 			}
@@ -40,10 +44,12 @@ func main() {
 	pool.Stop()
 }
 
+type Task func()
+
 type WorkerPool struct {
 	maxWorkers int
 
-	taskChan chan int
+	taskChan chan Task
 	doneChan chan struct{} // 每当一个任务完成，worker就向其中发一个消息
 
 	active int // 活跃worker数量
@@ -58,7 +64,7 @@ func NewWorkerPool(maxWorkers int) *WorkerPool {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	return &WorkerPool{
 		maxWorkers: maxWorkers,
-		taskChan:   make(chan int, 1000),
+		taskChan:   make(chan Task, 1000),
 		doneChan:   make(chan struct{}, 1000),
 		ctx:        ctx,
 		cancel:     cancelFunc,
@@ -84,7 +90,7 @@ func (p *WorkerPool) Run() {
 					p.startWorker(task)
 				} else {
 					// case 2: 将task再放回原来队列中，表示此时没有空闲的worker执行
-					go func(task int) {
+					go func(task Task) {
 						select {
 						case p.taskChan <- task:
 						case <-p.ctx.Done():
@@ -97,7 +103,7 @@ func (p *WorkerPool) Run() {
 }
 
 // 启动一个worker
-func (p *WorkerPool) startWorker(task int) {
+func (p *WorkerPool) startWorker(task Task) {
 	p.mu.Lock()
 	p.active++
 	fmt.Println("worker启动")
@@ -105,7 +111,7 @@ func (p *WorkerPool) startWorker(task int) {
 
 	p.wg.Add(1)
 
-	go func(curTask int) {
+	go func(curTask Task) {
 		defer func() {
 			p.mu.Lock()
 			p.active--
@@ -120,9 +126,9 @@ func (p *WorkerPool) startWorker(task int) {
 
 		// 处理任务
 		for {
-			fmt.Println("worker开始处理：", curTask)
-			time.Sleep(100 * time.Millisecond)
-			fmt.Println("worker处理完成：", curTask)
+			fmt.Println("worker开始处理任务")
+			curTask()
+			fmt.Println("worker处理任务完成")
 			p.doneChan <- struct{}{}
 
 			// 处理完成
@@ -146,12 +152,12 @@ func (p *WorkerPool) startWorker(task int) {
 }
 
 // 提交任务
-func (p *WorkerPool) Submit(task int) {
+func (p *WorkerPool) Submit(task Task) {
 	p.taskChan <- task
 }
 
 // 提交任务，带超时（如果一定时间内没有worker能处理，则抛出异常）
-func (p *WorkerPool) SubmitWithTimeout(task int, duration time.Duration) error {
+func (p *WorkerPool) SubmitWithTimeout(task Task, duration time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
 

@@ -27,6 +27,7 @@ func main() {
 		}
 	}()
 
+	// pool 阻塞，等待所有任务完成
 	err := pool.WaitWithTimeout(taskNum, 100*time.Second)
 	// pool超时，调用cancel函数，通知所有worker关闭
 	if err != nil {

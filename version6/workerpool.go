@@ -23,12 +23,22 @@ func main() {
 	go func() {
 		for i := 0; i < taskNum; i++ {
 			idx := i
-			executeTime := rand.Intn(51) + 90
+			executeTime := rand.Intn(51) + 80
 
-			resultChan, err := pool.SubmitWithTimeout(func() (interface{}, error) {
+			resultChan, err := pool.SubmitWithTimeout(func(ctx context.Context) (interface{}, error) {
 				fmt.Println("任务处理中...", idx)
-				time.Sleep(100 * time.Millisecond)
-				return fmt.Sprintf("任务%d完成", idx), nil
+				ticker := time.NewTicker(50 * time.Millisecond)
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-ctx.Done():
+						return nil, errors.New("任务被取消")
+					case <-ticker.C:
+						fmt.Println("任务进行中：", idx)
+						return fmt.Sprintf("任务%d完成", idx), nil
+					}
+				}
 			}, 2*time.Second, time.Duration(executeTime)*time.Millisecond)
 
 			if err != nil {
@@ -40,7 +50,7 @@ func main() {
 	}()
 
 	// pool 阻塞，等待所有任务完成
-	err := pool.WaitWithTimeout(taskNum, 100*time.Second)
+	err := pool.WaitWithTimeout(taskNum, 1*time.Second)
 	// pool超时，调用cancel函数，通知所有worker关闭
 	if err != nil {
 		fmt.Println(err)
@@ -64,7 +74,7 @@ func main() {
 }
 
 type Task struct {
-	fn         func() (interface{}, error)
+	fn         func(ctx context.Context) (interface{}, error)
 	resultChan chan Result
 	timeout    time.Duration
 }
@@ -154,7 +164,9 @@ func (p *WorkerPool) startWorker(task Task) {
 
 		// 处理任务
 		for {
-			p.handleTask(curTask)
+			if curTask.fn != nil {
+				p.handleTask(curTask)
+			}
 
 			// 处理完成
 			select {
@@ -176,33 +188,27 @@ func (p *WorkerPool) startWorker(task Task) {
 	}(task)
 }
 
+// 处理task
 func (p *WorkerPool) handleTask(task Task) {
 	// 执行任务并传递结果
 	fmt.Println("worker开始处理任务")
+	ctx := p.ctx
 	if task.timeout > 0 {
-		// 有超时时间
-		ctx, cancel := context.WithTimeout(context.Background(), task.timeout)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(p.ctx, task.timeout)
 		defer cancel()
-		resultChan := make(chan Result, 1)
+	}
 
-		// 执行该任务
-		go func() {
-			fn, err := task.fn()
-			resultChan <- Result{fn, err}
-		}()
+	result, err := task.fn(ctx)
 
-		select {
-		// 超时
-		case <-ctx.Done():
-			task.resultChan <- Result{nil, errors.New("任务执行超时")}
-		// 正常执行
-		case res := <-resultChan:
-			task.resultChan <- res
-		}
-	} else {
-		// 没有超时时间，正常执行
-		fn, err := task.fn()
-		task.resultChan <- Result{fn, err}
+	// 执行结果
+	select {
+	// 超时或取消
+	case <-ctx.Done():
+		task.resultChan <- Result{nil, errors.New("任务超时或取消")}
+	// 正常执行完成
+	default:
+		task.resultChan <- Result{result, err}
 	}
 
 	p.doneChan <- struct{}{}
@@ -210,7 +216,7 @@ func (p *WorkerPool) handleTask(task Task) {
 }
 
 // 提交任务
-func (p *WorkerPool) Submit(fn func() (interface{}, error)) <-chan Result {
+func (p *WorkerPool) Submit(fn func(ctx context.Context) (interface{}, error)) <-chan Result {
 	resultChan := make(chan Result, 1)
 	p.taskChan <- Task{
 		fn:         fn,
@@ -221,7 +227,7 @@ func (p *WorkerPool) Submit(fn func() (interface{}, error)) <-chan Result {
 }
 
 // 提交任务，带超时（如果一定时间内没有worker能处理，则抛出异常）
-func (p *WorkerPool) SubmitWithTimeout(fn func() (interface{}, error), submitTimeout, executeTimeout time.Duration) (<-chan Result, error) {
+func (p *WorkerPool) SubmitWithTimeout(fn func(ctx context.Context) (interface{}, error), submitTimeout, executeTimeout time.Duration) (<-chan Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
 	defer cancel()
 
@@ -233,6 +239,7 @@ func (p *WorkerPool) SubmitWithTimeout(fn func() (interface{}, error), submitTim
 		resultChan: resultChan,
 		timeout:    executeTimeout,
 	}:
+		fmt.Println("任务提交成功")
 		return resultChan, nil
 	// 任务提交超时
 	case <-ctx.Done():

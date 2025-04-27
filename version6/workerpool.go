@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -17,29 +16,18 @@ func main() {
 	pool := NewWorkerPool(5)
 	pool.Run()
 
-	const taskNum = 100
+	const taskNum = 500
 	var resultChans []<-chan Result
 
 	go func() {
 		for i := 0; i < taskNum; i++ {
 			idx := i
-			executeTime := rand.Intn(51) + 80
 
 			resultChan, err := pool.SubmitWithTimeout(func(ctx context.Context) (interface{}, error) {
 				fmt.Println("任务处理中...", idx)
-				ticker := time.NewTicker(50 * time.Millisecond)
-				defer ticker.Stop()
-
-				for {
-					select {
-					case <-ctx.Done():
-						return nil, errors.New("任务被取消")
-					case <-ticker.C:
-						fmt.Println("任务进行中：", idx)
-						return fmt.Sprintf("任务%d完成", idx), nil
-					}
-				}
-			}, 2*time.Second, time.Duration(executeTime)*time.Millisecond)
+				time.Sleep(100 * time.Millisecond)
+				return fmt.Sprintf("任务%d完成", idx), nil
+			}, 2*time.Second, 120*time.Millisecond)
 
 			if err != nil {
 				fmt.Println("任务提交失败:", i, err)
@@ -50,7 +38,7 @@ func main() {
 	}()
 
 	// pool 阻塞，等待所有任务完成
-	err := pool.WaitWithTimeout(taskNum, 1*time.Second)
+	err := pool.WaitWithTimeout(taskNum, 100*time.Second)
 	// pool超时，调用cancel函数，通知所有worker关闭
 	if err != nil {
 		fmt.Println(err)
@@ -71,6 +59,9 @@ func main() {
 			fmt.Println("收到任务结果:", res.value)
 		}
 	}
+
+	// 不主动退出，测试worker是否会自动关闭
+	time.Sleep(10 * time.Second)
 }
 
 type Task struct {
@@ -100,6 +91,9 @@ type WorkerPool struct {
 
 func NewWorkerPool(maxWorkers int) *WorkerPool {
 	ctx, cancelFunc := context.WithCancel(context.Background())
+	if maxWorkers < 1 {
+		maxWorkers = 1
+	}
 	return &WorkerPool{
 		maxWorkers: maxWorkers,
 		taskChan:   make(chan Task, 1000),
@@ -123,8 +117,8 @@ func (p *WorkerPool) Run() {
 					return
 				}
 				// 执行task
-				// case 1: 开启新worker
 				if p.active < p.maxWorkers {
+					// case 1: 开启新worker
 					p.startWorker(task)
 				} else {
 					// case 2: 将task再放回原来队列中，表示此时没有空闲的worker执行
@@ -159,7 +153,7 @@ func (p *WorkerPool) startWorker(task Task) {
 		}()
 
 		// 空闲一定时间后，worker自动退出
-		timer := time.NewTimer(10 * time.Second)
+		timer := time.NewTimer(5 * time.Second)
 		defer timer.Stop()
 
 		// 处理任务
@@ -239,11 +233,12 @@ func (p *WorkerPool) SubmitWithTimeout(fn func(ctx context.Context) (interface{}
 		resultChan: resultChan,
 		timeout:    executeTimeout,
 	}:
-		fmt.Println("任务提交成功")
 		return resultChan, nil
 	// 任务提交超时
 	case <-ctx.Done():
 		return nil, errors.New("提交任务超时")
+	default:
+		return nil, errors.New("通道关闭或阻塞")
 	}
 }
 

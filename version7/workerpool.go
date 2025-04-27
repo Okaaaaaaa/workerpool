@@ -14,7 +14,7 @@ import (
 */
 
 func main() {
-	pool := NewWorkerPool(5)
+	pool := NewWorkerPool(100)
 	go pool.Run()
 
 	const taskNum = 1000
@@ -48,9 +48,6 @@ func main() {
 		fmt.Println("所有任务执行完成")
 	}
 
-	// 主动关闭pool
-	//pool.Stop()
-
 	// 收集所有结果
 	for _, ch := range resultChans {
 		res := <-ch
@@ -60,6 +57,9 @@ func main() {
 			fmt.Println("收到任务结果:", res.value)
 		}
 	}
+
+	// 主动关闭pool
+	pool.Stop()
 }
 
 type Task struct {
@@ -159,7 +159,6 @@ func (p *WorkerPool) processWaitingQueue() bool {
 
 // 启动一个worker
 func (p *WorkerPool) startWorker(task Task) {
-	fmt.Println("worker启动")
 	p.mu.Lock()
 	p.active++
 	p.mu.Unlock()
@@ -206,7 +205,6 @@ func (p *WorkerPool) startWorker(task Task) {
 // 处理task
 func (p *WorkerPool) handleTask(task Task) {
 	// 执行任务并传递结果
-	fmt.Println("worker开始处理任务")
 	ctx := p.ctx
 	if task.timeout > 0 {
 		var cancel context.CancelFunc
@@ -227,7 +225,6 @@ func (p *WorkerPool) handleTask(task Task) {
 	}
 
 	p.doneChan <- struct{}{}
-	fmt.Println("worker处理任务结束")
 }
 
 // 提交任务
@@ -309,5 +306,5 @@ func (p *WorkerPool) Stop() {
 	close(p.taskChan)
 	// 等待所有worker退出
 	p.wg.Wait()
-	fmt.Println("worker pool优雅退出")
+	fmt.Println("worker pool退出")
 }

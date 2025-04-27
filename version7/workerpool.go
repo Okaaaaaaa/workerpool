@@ -110,7 +110,7 @@ func (p *WorkerPool) Run() {
 	for {
 		if p.waitingQueue.Size() != 0 {
 			if !p.processWaitingQueue() {
-				break
+				return
 			}
 			continue
 		}
@@ -123,7 +123,7 @@ func (p *WorkerPool) Run() {
 		case task, ok := <-p.taskChan:
 			// taskChan关闭，退出
 			if !ok {
-				break
+				return
 			}
 			select {
 			// 传给workerQueue
